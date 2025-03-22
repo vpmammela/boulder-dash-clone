@@ -7,6 +7,7 @@ export class Game {
     private ctx: CanvasRenderingContext2D;
     private soundManager: SoundManager;
     private lastTime: number = 0;
+    private lastPlayerMoveTime: number = 0;  // Add this new property to track player movement time
     private readonly TILE_SIZE = 32;
     private readonly GRID_WIDTH = 40;  // Increased from 25
     private readonly GRID_HEIGHT = 30;  // Increased from 19
@@ -156,6 +157,7 @@ export class Game {
             this.playerX = newX;
             this.playerY = newY;
             this.playerAnimFrame = (this.playerAnimFrame + 1) % 4;  // Cycle through 4 frames
+            this.lastPlayerMoveTime = performance.now();  // Update the last move time
 
             // Handle boulder pushing
             if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -189,6 +191,7 @@ export class Game {
         this.playerFacingLeft = false;
         this.lastAnimUpdate = 0;
         this.lastPhysicsUpdate = 0;
+        this.lastPlayerMoveTime = 0;  // Reset the last move time
         this.lastTime = 0;
         
         // Create a new level
@@ -232,9 +235,13 @@ export class Game {
                             this.soundManager.play('boulder');
                         }
 
-                        // Check if object crushed the player
+                        // Check if object crushed the player, but give a small grace period when moving down
                         if (this.playerX === x && this.playerY === y + 2) {
-                            this.startExplosion();
+                            // Only kill player if they've been under the boulder for more than one physics update
+                            const timeSinceLastMove = performance.now() - this.lastPlayerMoveTime;
+                            if (timeSinceLastMove >= this.PHYSICS_UPDATE_INTERVAL) {
+                                this.startExplosion();
+                            }
                         }
                     }
                     // Handle boulder-specific rolling behavior
@@ -267,7 +274,11 @@ export class Game {
         // Check if player was crushed by a boulder or diamond
         const tileAtPlayer = this.grid.getTile(this.playerX, this.playerY);
         if (tileAtPlayer === TileType.BOULDER || tileAtPlayer === TileType.DIAMOND) {
-            this.startExplosion();
+            // Only kill player if they've been under/in the same tile as a boulder for more than one physics update
+            const timeSinceLastMove = performance.now() - this.lastPlayerMoveTime;
+            if (timeSinceLastMove >= this.PHYSICS_UPDATE_INTERVAL) {
+                this.startExplosion();
+            }
         }
     }
 
