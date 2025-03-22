@@ -50,7 +50,8 @@ export class Game {
     private cameraY: number = 0;  // Camera position Y
     private targetCameraX: number = 0;  // Target camera position X
     private targetCameraY: number = 0;  // Target camera position Y
-    private readonly CAMERA_LERP_FACTOR = 0.1;  // How quickly the camera catches up to the target (0-1)
+    private readonly CAMERA_LERP_SPEED = 5.0;  // How quickly the camera catches up to the target (units per second)
+    private readonly CAMERA_DEADZONE = 0.01;  // Stop camera movement when very close to target
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -120,6 +121,9 @@ export class Game {
             this.playerY = Math.floor(Math.random() * (this.grid.getHeight() - 4)) + 2;
         } while (false); // We'll always accept the first position since we clear the area around it
 
+        // Set initial camera position centered on player
+        this.updateCameraPosition();
+
         // Add some dirt and boulders, but avoid the player's starting area
         for (let y = 1; y < this.grid.getHeight() - 1; y++) {
             for (let x = 1; x < this.grid.getWidth() - 1; x++) {
@@ -152,6 +156,16 @@ export class Game {
                 this.grid.setTile(this.playerX + dx, this.playerY + dy, TileType.EMPTY);
             }
         }
+    }
+
+    private updateCameraPosition(): void {
+        // Set camera position directly based on player position
+        this.cameraX = this.playerX - Math.floor(this.VIEWPORT_WIDTH / 2);
+        this.cameraY = this.playerY - Math.floor(this.VIEWPORT_HEIGHT / 2);
+
+        // Clamp camera position to level bounds
+        this.cameraX = Math.max(0, Math.min(this.cameraX, this.GRID_WIDTH - this.VIEWPORT_WIDTH));
+        this.cameraY = Math.max(0, Math.min(this.cameraY, this.GRID_HEIGHT - this.VIEWPORT_HEIGHT));
     }
 
     private handleInput(event: KeyboardEvent): void {
@@ -214,6 +228,9 @@ export class Game {
             this.playerY = newY;
             this.playerAnimFrame = (this.playerAnimFrame + 1) % 4;
             this.lastPlayerMoveTime = performance.now();
+
+            // Update camera position immediately after player moves
+            this.updateCameraPosition();
 
             // Handle boulder pushing
             if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -445,7 +462,7 @@ export class Game {
         }
     }
 
-    private updateCamera(): void {
+    private updateCamera(deltaTime: number): void {
         // Calculate target camera position (centered on player)
         this.targetCameraX = this.playerX - Math.floor(this.VIEWPORT_WIDTH / 2);
         this.targetCameraY = this.playerY - Math.floor(this.VIEWPORT_HEIGHT / 2);
@@ -454,17 +471,40 @@ export class Game {
         this.targetCameraX = Math.max(0, Math.min(this.targetCameraX, this.GRID_WIDTH - this.VIEWPORT_WIDTH));
         this.targetCameraY = Math.max(0, Math.min(this.targetCameraY, this.GRID_HEIGHT - this.VIEWPORT_HEIGHT));
 
-        // Smoothly move current camera position towards target position
+        // Calculate distance to target
         const dx = this.targetCameraX - this.cameraX;
         const dy = this.targetCameraY - this.cameraY;
 
-        // Apply lerp
-        this.cameraX += dx * this.CAMERA_LERP_FACTOR;
-        this.cameraY += dy * this.CAMERA_LERP_FACTOR;
+        // Only move camera if we're outside the deadzone
+        if (Math.abs(dx) > this.CAMERA_DEADZONE || Math.abs(dy) > this.CAMERA_DEADZONE) {
+            // Calculate movement this frame
+            const moveSpeed = this.CAMERA_LERP_SPEED * (deltaTime / 1000);
+            
+            // Calculate new positions
+            let newX = this.cameraX + dx * moveSpeed;
+            let newY = this.cameraY + dy * moveSpeed;
+            
+            // Prevent overshooting by clamping to target position
+            if (dx > 0) {
+                newX = Math.min(newX, this.targetCameraX);
+            } else {
+                newX = Math.max(newX, this.targetCameraX);
+            }
+            
+            if (dy > 0) {
+                newY = Math.min(newY, this.targetCameraY);
+            } else {
+                newY = Math.max(newY, this.targetCameraY);
+            }
+            
+            // Update camera position
+            this.cameraX = newX;
+            this.cameraY = newY;
 
-        // Ensure camera stays within bounds even during lerping
-        this.cameraX = Math.max(0, Math.min(this.cameraX, this.GRID_WIDTH - this.VIEWPORT_WIDTH));
-        this.cameraY = Math.max(0, Math.min(this.cameraY, this.GRID_HEIGHT - this.VIEWPORT_HEIGHT));
+            // Ensure camera stays within bounds
+            this.cameraX = Math.max(0, Math.min(this.cameraX, this.GRID_WIDTH - this.VIEWPORT_WIDTH));
+            this.cameraY = Math.max(0, Math.min(this.cameraY, this.GRID_HEIGHT - this.VIEWPORT_HEIGHT));
+        }
     }
 
     start(): void {
@@ -495,9 +535,6 @@ export class Game {
             this.updatePhysics();
             this.lastPhysicsUpdate = timestamp;
         }
-
-        // Update camera position
-        this.updateCamera();
 
         this.render();
 
@@ -535,45 +572,37 @@ export class Game {
         const diamondText = `💎 ${this.diamondsCollected}/${this.DIAMONDS_REQUIRED}`;
         this.ctx.fillText(diamondText, this.canvas.width - 20, this.SCORE_AREA_HEIGHT/2 + 8);
 
-        // Render the grid with offset for score area and camera position
+        // Create a clipping region for the game area
         this.ctx.save();
-        this.ctx.translate(0, this.SCORE_AREA_HEIGHT);
-        
-        // Only render the visible portion of the grid
-        // Use rounded camera positions to avoid tile rendering artifacts
-        const startX = Math.round(this.cameraX);
-        const startY = Math.round(this.cameraY);
-        const endX = startX + this.VIEWPORT_WIDTH;
-        const endY = startY + this.VIEWPORT_HEIGHT;
+        this.ctx.beginPath();
+        this.ctx.rect(0, this.SCORE_AREA_HEIGHT, this.canvas.width, this.canvas.height - this.SCORE_AREA_HEIGHT);
+        this.ctx.clip();
 
-        // Apply sub-pixel camera offset to make scrolling smooth
-        this.ctx.save();
+        // Translate for game area only
         this.ctx.translate(
-            -(this.cameraX - Math.floor(this.cameraX)) * this.TILE_SIZE,
-            -(this.cameraY - Math.floor(this.cameraY)) * this.TILE_SIZE
+            -this.cameraX * this.TILE_SIZE,
+            -this.cameraY * this.TILE_SIZE + this.SCORE_AREA_HEIGHT
         );
+        
+        // Render the game grid
+        const startX = Math.floor(this.cameraX);
+        const startY = Math.floor(this.cameraY);
+        const endX = startX + this.VIEWPORT_WIDTH + 1;
+        const endY = startY + this.VIEWPORT_HEIGHT + 1;
 
-        for (let y = startY - 1; y < endY + 1; y++) {
-            for (let x = startX - 1; x < endX + 1; x++) {
+        for (let y = startY; y < endY; y++) {
+            for (let x = startX; x < endX; x++) {
                 if (this.grid.isInBounds(x, y)) {
                     const tile = this.grid.getTile(x, y);
-                    // Render tiles with camera offset
-                    this.renderTile(x - startX, y - startY, tile);
+                    this.renderTile(x, y, tile);
                 }
             }
         }
 
         // Render the player if game is active
         if (!this.gameOver && !this.gameWon) {
-            // Render player with camera offset
-            this.renderTile(
-                this.playerX - startX,
-                this.playerY - startY,
-                TileType.PLAYER
-            );
+            this.renderTile(this.playerX, this.playerY, TileType.PLAYER);
         }
-
-        this.ctx.restore();
 
         this.ctx.restore();
 
