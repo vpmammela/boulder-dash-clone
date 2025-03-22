@@ -4,5 +4,6 @@ export enum TileType {
     BOULDER = 2,
     DIAMOND = 3,
     WALL = 4,
-    PLAYER = 5
+    PLAYER = 5,
+    EXIT = 6
 } 

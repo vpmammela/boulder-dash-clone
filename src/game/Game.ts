@@ -12,6 +12,11 @@ export class Game {
     private readonly GRID_WIDTH = 40;  // Increased from 25
     private readonly GRID_HEIGHT = 30;  // Increased from 19
     private readonly SCORE_AREA_HEIGHT = 50; // Height of the score display area
+    private readonly TIME_LIMIT = 120;  // Time limit in seconds
+    private timeRemaining: number;  // Current time remaining
+    private readonly TIME_WARNING_THRESHOLD = 30;  // Time threshold for warning (in seconds)
+    private isTimeWarning: boolean = false;  // Track if we're in warning state
+    private lastTimeUpdate: number = 0;  // Track last time update
     private grid: Grid;
     private playerX: number = 1;
     private playerY: number = 1;
@@ -34,11 +39,17 @@ export class Game {
     private lastExplosionUpdate: number = 0;
     private explosionX: number = 0;
     private explosionY: number = 0;
+    private exitX: number = -1;
+    private exitY: number = -1;
+    private exitRevealed: boolean = false;
+    private readonly EXIT_APPEAR_DELAY = 500; // Delay before exit appears (ms)
+    private exitAppearTime: number = 0;
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d')!;
         this.soundManager = new SoundManager();
+        this.timeRemaining = this.TIME_LIMIT;
         
         // Set canvas size based on grid dimensions plus score area
         this.canvas.width = this.GRID_WIDTH * this.TILE_SIZE;  // 40 * 32 = 1280px
@@ -148,6 +159,11 @@ export class Game {
                 this.soundManager.play('diamond');
             } else if (targetTile === TileType.DIRT) {
                 this.soundManager.play('walk');
+            } else if (targetTile === TileType.EXIT && this.exitRevealed) {
+                this.gameWon = true;
+                this.soundManager.stop('timeWarning');
+                this.soundManager.play('victory');
+                return;
             }
 
             // Clear the new position before moving there
@@ -156,8 +172,8 @@ export class Game {
             // Update player position and animation
             this.playerX = newX;
             this.playerY = newY;
-            this.playerAnimFrame = (this.playerAnimFrame + 1) % 4;  // Cycle through 4 frames
-            this.lastPlayerMoveTime = performance.now();  // Update the last move time
+            this.playerAnimFrame = (this.playerAnimFrame + 1) % 4;
+            this.lastPlayerMoveTime = performance.now();
 
             // Handle boulder pushing
             if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -170,13 +186,36 @@ export class Game {
         this.score += this.POINTS_PER_DIAMOND;
         this.diamondsCollected++;
         
-        if (this.diamondsCollected >= this.DIAMONDS_REQUIRED) {
-            this.gameWon = true;
-            this.soundManager.play('victory');
+        if (this.diamondsCollected >= this.DIAMONDS_REQUIRED && !this.exitRevealed) {
+            this.revealExit();
+            this.soundManager.play('diamond');
         }
     }
 
+    private revealExit(): void {
+        // Find a suitable position for the exit
+        do {
+            this.exitX = Math.floor(Math.random() * (this.grid.getWidth() - 4)) + 2;
+            this.exitY = Math.floor(Math.random() * (this.grid.getHeight() - 4)) + 2;
+        } while (
+            // Avoid player position and immediate surroundings
+            (Math.abs(this.exitX - this.playerX) <= 2 && Math.abs(this.exitY - this.playerY) <= 2) ||
+            // Avoid positions with boulders above (to prevent crushing)
+            this.grid.getTile(this.exitX, this.exitY - 1) === TileType.BOULDER
+        );
+
+        this.exitRevealed = true;
+        this.exitAppearTime = performance.now();
+        // Clear the area around the exit
+        this.grid.setTile(this.exitX, this.exitY, TileType.EXIT);
+        // Play portal sound
+        this.soundManager.play('portal');
+    }
+
     private resetGame(): void {
+        // Stop warning sound if it's playing
+        this.soundManager.stop('timeWarning');
+        
         // Clear the current player position before resetting
         this.grid.setTile(this.playerX, this.playerY, TileType.EMPTY);
         
@@ -191,8 +230,15 @@ export class Game {
         this.playerFacingLeft = false;
         this.lastAnimUpdate = 0;
         this.lastPhysicsUpdate = 0;
-        this.lastPlayerMoveTime = 0;  // Reset the last move time
+        this.lastPlayerMoveTime = 0;
         this.lastTime = 0;
+        this.timeRemaining = this.TIME_LIMIT;
+        this.isTimeWarning = false;
+        this.lastTimeUpdate = 0;
+        this.exitRevealed = false;
+        this.exitX = -1;
+        this.exitY = -1;
+        this.exitAppearTime = 0;
         
         // Create a new level
         this.initializeLevel();
@@ -210,7 +256,7 @@ export class Game {
 
     private canMoveTo(x: number, y: number): boolean {
         const tile = this.grid.getTile(x, y);
-        return tile === TileType.EMPTY || tile === TileType.DIRT || tile === TileType.DIAMOND;
+        return tile === TileType.EMPTY || tile === TileType.DIRT || tile === TileType.DIAMOND || tile === TileType.EXIT;
     }
 
     private updatePhysics(): void {
@@ -321,6 +367,44 @@ export class Game {
         }
     }
 
+    private updateTime(timestamp: number): void {
+        if (this.gameOver || this.gameWon) {
+            // Only stop warning sound once when game ends
+            if (this.isTimeWarning) {
+                this.soundManager.stop('timeWarning');
+                this.isTimeWarning = false;
+            }
+            return;
+        }
+
+        // Update time every second
+        if (timestamp - this.lastTimeUpdate >= 1000) {
+            this.timeRemaining--;
+            this.lastTimeUpdate = timestamp;
+
+            // Check for time warning state
+            if (this.timeRemaining <= this.TIME_WARNING_THRESHOLD && !this.isTimeWarning) {
+                console.log('Time warning triggered:', {
+                    timeRemaining: this.timeRemaining,
+                    threshold: this.TIME_WARNING_THRESHOLD,
+                    isTimeWarning: this.isTimeWarning
+                });
+                this.isTimeWarning = true;
+                this.soundManager.play('timeWarning');
+            }
+
+            // Check if time has run out
+            if (this.timeRemaining <= 0) {
+                console.log('Time ran out, stopping warning sound');
+                this.timeRemaining = 0;
+                this.gameOver = true;
+                this.soundManager.stop('timeWarning');
+                this.isTimeWarning = false;  // Reset warning state
+                this.soundManager.play('explosion');
+            }
+        }
+    }
+
     start(): void {
         requestAnimationFrame(this.gameLoop.bind(this));
     }
@@ -328,6 +412,9 @@ export class Game {
     private gameLoop(timestamp: number): void {
         const deltaTime = timestamp - this.lastTime;
         this.lastTime = timestamp;
+
+        // Update time
+        this.updateTime(timestamp);
 
         // Update explosion if active
         this.updateExplosion(timestamp);
@@ -367,12 +454,22 @@ export class Game {
         this.ctx.textAlign = 'left';
         this.ctx.fillText(`Score: ${this.score}`, 20, this.SCORE_AREA_HEIGHT/2 + 8);
         
+        // Add time remaining display
+        const minutes = Math.floor(this.timeRemaining / 60);
+        const seconds = this.timeRemaining % 60;
+        const timeText = `Time: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+        const timeColor = this.isTimeWarning ? (Math.floor(Date.now() / 500) % 2 === 0 ? '#FF0000' : '#FFFFFF') : '#FFFFFF';
+        this.ctx.fillStyle = timeColor;
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText(timeText, this.canvas.width / 2, this.SCORE_AREA_HEIGHT/2 + 8);
+        
         // Add diamond icon and count
         this.ctx.fillStyle = '#00FFFF';
         this.ctx.font = '24px Arial';
+        this.ctx.textAlign = 'right';
         const diamondText = `💎 ${this.diamondsCollected}/${this.DIAMONDS_REQUIRED}`;
         const diamondTextWidth = this.ctx.measureText(diamondText).width;
-        this.ctx.fillText(diamondText, this.canvas.width - diamondTextWidth - 20, this.SCORE_AREA_HEIGHT/2 + 8);
+        this.ctx.fillText(diamondText, this.canvas.width - 20, this.SCORE_AREA_HEIGHT/2 + 8);
 
         // Render the grid with offset for score area
         this.ctx.save();
@@ -429,7 +526,8 @@ export class Game {
             [TileType.BOULDER]: '#808080',
             [TileType.DIAMOND]: '#00FFFF',
             [TileType.WALL]: '#696969',
-            [TileType.PLAYER]: '#FF0000'
+            [TileType.PLAYER]: '#FF0000',
+            [TileType.EXIT]: '#00FF00'  // Green color for exit
         };
 
         // Draw explosion effect if active
@@ -718,6 +816,61 @@ export class Game {
             this.ctx.arc(centerX - size * 0.2, centerY - size * 0.2, size * 0.3, 0, Math.PI * 2);
             this.ctx.stroke();
 
+        } else if (type === TileType.EXIT) {
+            const centerX = (x * this.TILE_SIZE) + (this.TILE_SIZE / 2);
+            const centerY = (y * this.TILE_SIZE) + (this.TILE_SIZE / 2);
+            const size = this.TILE_SIZE * 0.8;
+
+            // Calculate animation progress
+            const timeSinceAppear = performance.now() - this.exitAppearTime;
+            const appearProgress = Math.min(1, timeSinceAppear / this.EXIT_APPEAR_DELAY);
+            
+            // Create portal effect
+            const portalGradient = this.ctx.createRadialGradient(
+                centerX, centerY, 0,
+                centerX, centerY, size * appearProgress
+            );
+            portalGradient.addColorStop(0, '#00FF00');  // Bright green center
+            portalGradient.addColorStop(0.6, '#008000'); // Darker green
+            portalGradient.addColorStop(1, '#004000');   // Even darker green
+
+            // Draw swirling portal
+            this.ctx.save();
+            this.ctx.translate(centerX, centerY);
+            this.ctx.rotate(performance.now() / 1000);  // Rotate based on time
+
+            // Draw multiple arcs for swirl effect
+            for (let i = 0; i < 4; i++) {
+                const rotation = (Math.PI / 2) * i + (performance.now() / 1000);
+                this.ctx.beginPath();
+                this.ctx.arc(0, 0, size * 0.5 * appearProgress, rotation, rotation + Math.PI * 0.3);
+                this.ctx.strokeStyle = `rgba(0, 255, 0, ${0.7 - i * 0.15})`;
+                this.ctx.lineWidth = 3;
+                this.ctx.stroke();
+            }
+
+            this.ctx.restore();
+
+            // Draw the main portal
+            this.ctx.fillStyle = portalGradient;
+            this.ctx.beginPath();
+            this.ctx.arc(centerX, centerY, size * 0.5 * appearProgress, 0, Math.PI * 2);
+            this.ctx.fill();
+
+            // Add glow effect
+            const glowSize = size * (0.7 + Math.sin(performance.now() / 500) * 0.1);
+            const glowGradient = this.ctx.createRadialGradient(
+                centerX, centerY, 0,
+                centerX, centerY, glowSize
+            );
+            glowGradient.addColorStop(0, 'rgba(0, 255, 0, 0.2)');
+            glowGradient.addColorStop(1, 'rgba(0, 255, 0, 0)');
+            this.ctx.fillStyle = glowGradient;
+            this.ctx.beginPath();
+            this.ctx.arc(centerX, centerY, glowSize, 0, Math.PI * 2);
+            this.ctx.fill();
+
+            return;
         } else {
             // Only draw non-empty tiles
             if (type !== TileType.EMPTY) {
