@@ -8,13 +8,15 @@ export class Game {
     private soundManager: SoundManager;
     private lastTime: number = 0;
     private lastPlayerMoveTime: number = 0;  // Add this new property to track player movement time
-    private readonly TILE_SIZE = 32;
-    private readonly GRID_WIDTH = 40;  // Increased from 25
-    private readonly GRID_HEIGHT = 30;  // Increased from 19
+    private readonly TILE_SIZE = 48;  // Increased from 32 to 48 pixels
+    private readonly GRID_WIDTH = 100;  // Much larger level width
+    private readonly GRID_HEIGHT = 60;  // Much larger level height
+    private readonly VIEWPORT_WIDTH = 32;  // How many tiles to show horizontally
+    private readonly VIEWPORT_HEIGHT = 20;  // How many tiles to show vertically
     private readonly SCORE_AREA_HEIGHT = 50; // Height of the score display area
-    private readonly TIME_LIMIT = 120;  // Time limit in seconds
+    private readonly TIME_LIMIT = 300;  // Increased time limit for larger level
     private timeRemaining: number;  // Current time remaining
-    private readonly TIME_WARNING_THRESHOLD = 30;  // Time threshold for warning (in seconds)
+    private readonly TIME_WARNING_THRESHOLD = 60;  // Adjusted warning threshold
     private isTimeWarning: boolean = false;  // Track if we're in warning state
     private lastTimeUpdate: number = 0;  // Track last time update
     private grid: Grid;
@@ -24,12 +26,12 @@ export class Game {
     private playerFacingLeft: boolean = false;  // Track player direction
     private readonly ANIM_FRAME_DURATION = 150;  // Duration of each animation frame in ms
     private lastAnimUpdate: number = 0;  // Track last animation update
-    private readonly PHYSICS_UPDATE_INTERVAL = 225; // Increased from 150ms to 300ms to slow down boulder movement
+    private readonly PHYSICS_UPDATE_INTERVAL = 225; // Physics update interval
     private lastPhysicsUpdate: number = 0;
     private gameOver: boolean = false;
     private score: number = 0;
     private diamondsCollected: number = 0;
-    private readonly DIAMONDS_REQUIRED = 20;  // Increased from 10 to match the larger level
+    private readonly DIAMONDS_REQUIRED = 25;  // Adjusted for new grid size
     private readonly POINTS_PER_DIAMOND = 100;
     private gameWon: boolean = false;
     private explosionRadius: number = 0;
@@ -44,6 +46,11 @@ export class Game {
     private exitRevealed: boolean = false;
     private readonly EXIT_APPEAR_DELAY = 500; // Delay before exit appears (ms)
     private exitAppearTime: number = 0;
+    private cameraX: number = 0;  // Camera position X
+    private cameraY: number = 0;  // Camera position Y
+    private targetCameraX: number = 0;  // Target camera position X
+    private targetCameraY: number = 0;  // Target camera position Y
+    private readonly CAMERA_LERP_FACTOR = 0.1;  // How quickly the camera catches up to the target (0-1)
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -51,9 +58,32 @@ export class Game {
         this.soundManager = new SoundManager();
         this.timeRemaining = this.TIME_LIMIT;
         
-        // Set canvas size based on grid dimensions plus score area
-        this.canvas.width = this.GRID_WIDTH * this.TILE_SIZE;  // 40 * 32 = 1280px
-        this.canvas.height = this.GRID_HEIGHT * this.TILE_SIZE + this.SCORE_AREA_HEIGHT;  // 30 * 32 + 50 = 1010px
+        // Calculate the logical canvas size based on viewport dimensions (not grid dimensions)
+        const logicalWidth = this.VIEWPORT_WIDTH * this.TILE_SIZE;
+        const logicalHeight = this.VIEWPORT_HEIGHT * this.TILE_SIZE + this.SCORE_AREA_HEIGHT;
+        
+        // Calculate scale to fit the window with some padding
+        const padding = 20; // 20px padding on each side
+        const scaleX = (window.innerWidth - padding * 2) / logicalWidth;
+        const scaleY = (window.innerHeight - padding * 2) / logicalHeight;
+        const scale = Math.min(scaleX, scaleY);
+        
+        // Set canvas size to scaled dimensions
+        this.canvas.width = logicalWidth;
+        this.canvas.height = logicalHeight;
+        
+        // Apply CSS scaling
+        this.canvas.style.width = `${logicalWidth * scale}px`;
+        this.canvas.style.height = `${logicalHeight * scale}px`;
+        
+        // Center the canvas
+        this.canvas.style.position = 'fixed';
+        this.canvas.style.left = '50%';
+        this.canvas.style.top = '50%';
+        this.canvas.style.transform = 'translate(-50%, -50%)';
+        
+        // Enable crisp pixels
+        this.ctx.imageSmoothingEnabled = false;
 
         // Initialize grid with new dimensions
         this.grid = new Grid(this.GRID_WIDTH, this.GRID_HEIGHT);
@@ -61,6 +91,16 @@ export class Game {
 
         // Set up event listeners
         window.addEventListener('keydown', this.handleInput.bind(this));
+        
+        // Add resize handler
+        window.addEventListener('resize', () => {
+            const newScaleX = (window.innerWidth - padding * 2) / logicalWidth;
+            const newScaleY = (window.innerHeight - padding * 2) / logicalHeight;
+            const newScale = Math.min(newScaleX, newScaleY);
+            
+            this.canvas.style.width = `${logicalWidth * newScale}px`;
+            this.canvas.style.height = `${logicalHeight * newScale}px`;
+        });
     }
 
     private initializeLevel(): void {
@@ -405,6 +445,28 @@ export class Game {
         }
     }
 
+    private updateCamera(): void {
+        // Calculate target camera position (centered on player)
+        this.targetCameraX = this.playerX - Math.floor(this.VIEWPORT_WIDTH / 2);
+        this.targetCameraY = this.playerY - Math.floor(this.VIEWPORT_HEIGHT / 2);
+
+        // Clamp target position to level bounds
+        this.targetCameraX = Math.max(0, Math.min(this.targetCameraX, this.GRID_WIDTH - this.VIEWPORT_WIDTH));
+        this.targetCameraY = Math.max(0, Math.min(this.targetCameraY, this.GRID_HEIGHT - this.VIEWPORT_HEIGHT));
+
+        // Smoothly move current camera position towards target position
+        const dx = this.targetCameraX - this.cameraX;
+        const dy = this.targetCameraY - this.cameraY;
+
+        // Apply lerp
+        this.cameraX += dx * this.CAMERA_LERP_FACTOR;
+        this.cameraY += dy * this.CAMERA_LERP_FACTOR;
+
+        // Ensure camera stays within bounds even during lerping
+        this.cameraX = Math.max(0, Math.min(this.cameraX, this.GRID_WIDTH - this.VIEWPORT_WIDTH));
+        this.cameraY = Math.max(0, Math.min(this.cameraY, this.GRID_HEIGHT - this.VIEWPORT_HEIGHT));
+    }
+
     start(): void {
         requestAnimationFrame(this.gameLoop.bind(this));
     }
@@ -433,6 +495,9 @@ export class Game {
             this.updatePhysics();
             this.lastPhysicsUpdate = timestamp;
         }
+
+        // Update camera position
+        this.updateCamera();
 
         this.render();
 
@@ -468,24 +533,47 @@ export class Game {
         this.ctx.font = '24px Arial';
         this.ctx.textAlign = 'right';
         const diamondText = `💎 ${this.diamondsCollected}/${this.DIAMONDS_REQUIRED}`;
-        const diamondTextWidth = this.ctx.measureText(diamondText).width;
         this.ctx.fillText(diamondText, this.canvas.width - 20, this.SCORE_AREA_HEIGHT/2 + 8);
 
-        // Render the grid with offset for score area
+        // Render the grid with offset for score area and camera position
         this.ctx.save();
         this.ctx.translate(0, this.SCORE_AREA_HEIGHT);
         
-        for (let y = 0; y < this.grid.getHeight(); y++) {
-            for (let x = 0; x < this.grid.getWidth(); x++) {
-                const tile = this.grid.getTile(x, y);
-                this.renderTile(x, y, tile);
+        // Only render the visible portion of the grid
+        // Use rounded camera positions to avoid tile rendering artifacts
+        const startX = Math.round(this.cameraX);
+        const startY = Math.round(this.cameraY);
+        const endX = startX + this.VIEWPORT_WIDTH;
+        const endY = startY + this.VIEWPORT_HEIGHT;
+
+        // Apply sub-pixel camera offset to make scrolling smooth
+        this.ctx.save();
+        this.ctx.translate(
+            -(this.cameraX - Math.floor(this.cameraX)) * this.TILE_SIZE,
+            -(this.cameraY - Math.floor(this.cameraY)) * this.TILE_SIZE
+        );
+
+        for (let y = startY - 1; y < endY + 1; y++) {
+            for (let x = startX - 1; x < endX + 1; x++) {
+                if (this.grid.isInBounds(x, y)) {
+                    const tile = this.grid.getTile(x, y);
+                    // Render tiles with camera offset
+                    this.renderTile(x - startX, y - startY, tile);
+                }
             }
         }
 
         // Render the player if game is active
         if (!this.gameOver && !this.gameWon) {
-            this.renderTile(this.playerX, this.playerY, TileType.PLAYER);
+            // Render player with camera offset
+            this.renderTile(
+                this.playerX - startX,
+                this.playerY - startY,
+                TileType.PLAYER
+            );
         }
+
+        this.ctx.restore();
 
         this.ctx.restore();
 
